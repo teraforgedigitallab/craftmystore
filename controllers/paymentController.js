@@ -493,10 +493,12 @@ exports.initiateCashfreePayment = async (req, res) => {
       global.pendingPayments[merchantTransactionId].paymentSessionId = response.data.payment_session_id;
       global.pendingPayments[merchantTransactionId].status = 'INITIATED';
       
+      // Send both snake_case and camelCase versions for compatibility
       return res.json({
         success: true,
         orderId: response.data.order_id,
-        paymentSessionId: response.data.payment_session_id,
+        payment_session_id: response.data.payment_session_id, // Original snake_case from Cashfree
+        paymentSessionId: response.data.payment_session_id,   // Converted to camelCase for frontend
         merchantTransactionId
       });
     } else {

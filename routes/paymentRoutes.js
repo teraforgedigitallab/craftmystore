@@ -12,8 +12,9 @@ router.post('/initiate-phonepe', paymentController.initiatePhonePePayment);
 router.post('/phonepe-callback', paymentController.phonePeCallback);
 router.get('/verify-phonepe/:merchantTransactionId', paymentController.verifyPhonePePayment);
 
-// PayPal routes
-router.post('/initiate-paypal', paymentController.initiatePayPalPayment);
-router.post('/capture-paypal', paymentController.capturePayPalPayment);
+// Cashfree routes
+router.post('/initiate-cashfree', paymentController.initiateCashfreePayment);
+router.get('/verify-cashfree/:merchantTransactionId', paymentController.verifyCashfreePayment);
+router.post('/cashfree-webhook', paymentController.cashfreeWebhook);
 
 module.exports = router;

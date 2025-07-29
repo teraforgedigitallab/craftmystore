@@ -13,7 +13,8 @@ app.use(cors({
   origin: [
     process.env.FRONTEND_URL,
     'https://craftmystore.com', // Add specific origins
-    /\.vercel\.app$/ // Allow all Vercel preview deployments
+    /\.vercel\.app$/, // Allow all Vercel preview deployments
+    /\.cashfree\.com$/
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,

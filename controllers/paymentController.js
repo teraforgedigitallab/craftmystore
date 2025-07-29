@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { StandardCheckoutClient, Env, MetaInfo, StandardCheckoutPayRequest } = require('pg-sdk-node');
 const nodemailer = require('nodemailer');
 const admin = require('firebase-admin');
+const { Cashfree, CFEnvironment } = require('cashfree-pg');
 
 // Initialize Firebase Admin SDK (if not already initialized elsewhere)
 if (!admin.apps.length) {
@@ -133,6 +134,19 @@ const sendAdminNotificationEmail = async (paymentDetails) => {
     console.error('Error sending admin notification email:', error);
     return false;
   }
+};
+
+// Initialize Cashfree client based on environment
+const getCashfreeClient = () => {
+  const environment = process.env.CASHFREE_ENVIRONMENT === 'production' 
+    ? CFEnvironment.PRODUCTION 
+    : CFEnvironment.SANDBOX;
+  
+  return new Cashfree(
+    environment,
+    process.env.CASHFREE_CLIENT_ID,
+    process.env.CASHFREE_CLIENT_SECRET
+  );
 };
 
 // PhonePe Payment Initiation using SDK
@@ -406,8 +420,8 @@ exports.verifyPhonePePayment = async (req, res) => {
   }
 };
 
-// PayPal Payment Initiation
-exports.initiatePayPalPayment = async (req, res) => {
+// Initiate Cashfree Payment
+exports.initiateCashfreePayment = async (req, res) => {
   try {
     const { amount, ecommPlan, hostingPlan, customerName, customerEmail, customerPhone } = req.body;
     
@@ -418,59 +432,16 @@ exports.initiatePayPalPayment = async (req, res) => {
       });
     }
     
-    // Get PayPal access token
-    const tokenResponse = await axios.post(
-      `${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`,
-      'grant_type=client_credentials',
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`).toString('base64')}`
-        }
-      }
-    );
+    console.log('Cashfree Payment Request:', req.body);
     
-    const accessToken = tokenResponse.data.access_token;
+    // Generate unique transaction ID
+    const merchantTransactionId = `CMS_${Date.now()}_${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
     
-    // Create PayPal order
-    const orderData = {
-      intent: 'CAPTURE',
-      purchase_units: [{
-        amount: {
-          currency_code: 'USD',
-          value: amount.toString()
-        },
-        description: `CraftMyStore - ${ecommPlan} + ${hostingPlan}`
-      }],
-      application_context: {
-        return_url: `${process.env.FRONTEND_URL}/payment-success`,
-        cancel_url: `${process.env.FRONTEND_URL}/payment-cancel`,
-        brand_name: 'CraftMyStore',
-        landing_page: 'LOGIN',
-        user_action: 'PAY_NOW'
-      }
-    };
+    // Create return URL with order details
+    const returnUrl = `${process.env.FRONTEND_URL}/payment-status?merchantTransactionId=${merchantTransactionId}&amount=${amount}&method=cashfree&customer=${encodeURIComponent(customerName)}`;
     
-    console.log('PayPal order data:', JSON.stringify(orderData, null, 2));
-    
-    const orderResponse = await axios.post(
-      `${process.env.PAYPAL_BASE_URL}/v2/checkout/orders`,
-      orderData,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        }
-      }
-    );
-    
-    console.log('PayPal order created:', orderResponse.data.id);
-    const approvalUrl = orderResponse.data.links.find(link => link.rel === 'approve').href;
-    console.log('PayPal approval URL:', approvalUrl);
-    
-    // Store the order details for later verification and email
-    const merchantTransactionId = orderResponse.data.id;
-    global.pendingPayments[merchantTransactionId] = {
+    // Store payment info for verification
+    const paymentInfo = {
       merchantTransactionId,
       amount: parseFloat(amount),
       customerName,
@@ -482,124 +453,213 @@ exports.initiatePayPalPayment = async (req, res) => {
       createdAt: new Date().toISOString()
     };
     
-    // FIXED: Changed approvalUrl to redirectUrl to match frontend expectations
-    res.json({
-      success: true,
-      orderId: orderResponse.data.id,
-      redirectUrl: approvalUrl
-    });
+    global.pendingPayments[merchantTransactionId] = paymentInfo;
     
+    // Initialize Cashfree client
+    const cashfree = getCashfreeClient();
+    
+    // Prepare order request
+    const orderRequest = {
+      order_id: merchantTransactionId,
+      order_amount: amount.toString(),
+      order_currency: "INR",
+      customer_details: {
+        customer_id: `CUST_${Date.now()}`,
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_phone: customerPhone
+      },
+      order_meta: {
+        return_url: returnUrl + '?order_id={order_id}',
+        notify_url: process.env.BACKEND_URL + '/api/payment/cashfree-webhook'
+      },
+      order_note: `CraftMyStore - ${ecommPlan} + ${hostingPlan}`
+    };
+    
+    console.log('Cashfree order request:', JSON.stringify(orderRequest, null, 2));
+    
+    // Create order in Cashfree
+    const response = await cashfree.PGCreateOrder(orderRequest);
+    console.log('Cashfree order response:', response.data);
+    
+    if (response.data && response.data.payment_session_id) {
+      // Update payment info with payment session ID
+      global.pendingPayments[merchantTransactionId].cashfreeOrderId = response.data.order_id;
+      global.pendingPayments[merchantTransactionId].paymentSessionId = response.data.payment_session_id;
+      global.pendingPayments[merchantTransactionId].status = 'INITIATED';
+      
+      return res.json({
+        success: true,
+        orderId: response.data.order_id,
+        paymentSessionId: response.data.payment_session_id,
+        merchantTransactionId
+      });
+    } else {
+      console.error('Cashfree Error: Missing payment session ID');
+      return res.status(400).json({
+        success: false,
+        message: 'Payment initiation failed',
+        error: response.data
+      });
+    }
   } catch (error) {
-    console.error('PayPal Error:', error.response?.data || error.message);
-    res.status(500).json({
+    console.error('Cashfree Payment Error:', error.response?.data || error.message);
+    return res.status(500).json({
       success: false,
-      message: 'PayPal payment failed: ' + (error.response?.data?.message || error.message)
+      message: 'Payment initiation failed: ' + (error.response?.data?.message || error.message)
     });
   }
 };
 
-// Capture PayPal Payment
-exports.capturePayPalPayment = async (req, res) => {
+// Verify Cashfree Payment
+exports.verifyCashfreePayment = async (req, res) => {
   try {
-    const { orderID } = req.body;
+    const { merchantTransactionId } = req.params;
     
-    if (!orderID) {
+    if (!merchantTransactionId) {
       return res.status(400).json({
         success: false,
-        message: 'Missing order ID'
+        message: 'Missing transaction ID'
       });
     }
     
-    console.log('Capturing PayPal payment for order:', orderID);
+    console.log('Verifying Cashfree payment for:', merchantTransactionId);
     
-    // Get PayPal access token
-    const tokenResponse = await axios.post(
-      `${process.env.PAYPAL_BASE_URL}/v1/oauth2/token`,
-      'grant_type=client_credentials',
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`).toString('base64')}`
-        }
-      }
-    );
-    
-    const accessToken = tokenResponse.data.access_token;
-    
-    // Capture payment
-    const captureResponse = await axios.post(
-      `${process.env.PAYPAL_BASE_URL}/v2/checkout/orders/${orderID}/capture`,
-      {},
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        }
-      }
-    );
-    
-    console.log('PayPal payment captured successfully');
-    
-    // Get payment info from pendingPayments or create from PayPal response
-    let paymentInfo = global.pendingPayments[orderID];
-    
-    // If not found in memory, create from PayPal response
-    if (!paymentInfo) {
-      const captureData = captureResponse.data;
-      paymentInfo = {
-        merchantTransactionId: orderID,
-        customerName: captureData.payer?.name?.given_name + ' ' + captureData.payer?.name?.surname || 'PayPal Customer',
-        customerEmail: captureData.payer?.email_address || 'No email provided',
-        customerPhone: 'Not provided via PayPal',
-        amount: captureData.purchase_units[0]?.payments?.captures[0]?.amount?.value || '0',
-        ecommPlan: captureData.purchase_units[0]?.description?.includes('CraftMyStore') ? 
-          captureData.purchase_units[0]?.description.split('-')[1]?.trim() : 'Standard',
-        hostingPlan: 'Standard'
-      };
+    // Get stored payment info
+    if (!global.pendingPayments || !global.pendingPayments[merchantTransactionId]) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
     }
     
-    // Update payment status
-    if (paymentInfo) {
-      paymentInfo.status = 'COMPLETED';
-      paymentInfo.paypalCaptureData = captureResponse.data;
-      paymentInfo.updatedAt = new Date().toISOString();
-      global.pendingPayments[orderID] = paymentInfo;
-    }
+    const paymentInfo = global.pendingPayments[merchantTransactionId];
     
-    // Send admin notification email
-    try {
-      await sendAdminNotificationEmail(paymentInfo);
-      console.log('Admin notification email sent successfully for PayPal payment');
-    } catch (emailError) {
-      console.error('Failed to send admin notification email for PayPal payment:', emailError);
-    }
+    // Initialize Cashfree client
+    const cashfree = getCashfreeClient();
     
-    // Store payment data in Firestore
-    try {
-      const firestorePaymentData = {
-        ...paymentInfo,
-        paymentMethod: 'paypal',
-        status: 'COMPLETED',
-        updatedAt: new Date().toISOString()
-      };
+    // Fetch order details from Cashfree
+    const response = await cashfree.PGFetchOrder(merchantTransactionId);
+    console.log('Cashfree order status response:', JSON.stringify(response.data, null, 2));
+    
+    const orderStatus = response.data.order_status;
+    
+    // Update payment status in memory
+    global.pendingPayments[merchantTransactionId].status = orderStatus;
+    global.pendingPayments[merchantTransactionId].verifiedAt = new Date().toISOString();
+    global.pendingPayments[merchantTransactionId].paymentDetails = response.data;
+    
+    if (orderStatus === 'PAID') {
+      console.log('SUCCESS DETECTED - Cashfree payment verified as successful');
       
-      await storePaymentData(firestorePaymentData);
-      console.log('PayPal payment data stored in Firestore successfully');
-    } catch (firestoreError) {
-      console.error('Failed to store PayPal payment data in Firestore:', firestoreError);
-      // Don't affect the payment response if Firestore storage fails
+      // Send admin notification email
+      try {
+        await sendAdminNotificationEmail(paymentInfo);
+        console.log('Admin notification email sent successfully');
+      } catch (emailError) {
+        console.error('Failed to send admin notification email:', emailError);
+      }
+      
+      // Store payment data in Firestore
+      try {
+        const firestorePaymentData = {
+          ...paymentInfo,
+          paymentMethod: 'cashfree',
+          status: 'COMPLETED',
+          updatedAt: new Date().toISOString()
+        };
+        
+        await storePaymentData(firestorePaymentData);
+        console.log('Cashfree payment data stored in Firestore successfully');
+      } catch (firestoreError) {
+        console.error('Failed to store Cashfree payment data in Firestore:', firestoreError);
+        // Don't affect the payment response if Firestore storage fails
+      }
+      
+      return res.json({
+        success: true,
+        status: 'SUCCESS',
+        message: 'Payment successful',
+        data: response.data
+      });
+    } else if (orderStatus === 'ACTIVE') {
+      console.log('PENDING DETECTED - Payment is still processing');
+      return res.json({
+        success: false,
+        status: 'PENDING',
+        message: 'Payment is still processing',
+        data: response.data
+      });
+    } else {
+      console.log('FAILURE DETECTED - Payment verified as failed or cancelled');
+      
+      return res.json({
+        success: false,
+        status: 'FAILED',
+        message: `Payment failed or was cancelled. Status: ${orderStatus}`,
+        data: response.data
+      });
+    }
+  } catch (error) {
+    console.error('Cashfree Verification Error:', error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      status: 'FAILED',
+      message: 'Verification failed due to a server error: ' + (error.response?.data?.message || error.message)
+    });
+  }
+};
+
+// Cashfree Webhook Handler
+exports.cashfreeWebhook = async (req, res) => {
+  try {
+    console.log('Cashfree Webhook received:', {
+      body: req.body,
+      headers: req.headers
+    });
+    
+    const eventData = req.body;
+    const orderId = eventData.data?.order?.order_id;
+    const orderStatus = eventData.data?.order?.order_status;
+    
+    if (orderId && global.pendingPayments[orderId]) {
+      global.pendingPayments[orderId].status = orderStatus === 'PAID' ? 'COMPLETED' : orderStatus;
+      global.pendingPayments[orderId].updatedAt = new Date().toISOString();
+      global.pendingPayments[orderId].webhookData = eventData;
+      console.log('Updated payment status for:', orderId, 'to:', orderStatus);
+      
+      // If payment is successful, send notification and store in Firestore
+      if (orderStatus === 'PAID') {
+        const paymentInfo = global.pendingPayments[orderId];
+        
+        // Send admin notification email
+        try {
+          await sendAdminNotificationEmail(paymentInfo);
+          console.log('Admin notification email sent successfully from webhook');
+        } catch (emailError) {
+          console.error('Failed to send admin notification email from webhook:', emailError);
+        }
+        
+        // Store payment data in Firestore
+        try {
+          const firestorePaymentData = {
+            ...paymentInfo,
+            paymentMethod: 'cashfree',
+            status: 'COMPLETED',
+            updatedAt: new Date().toISOString()
+          };
+          
+          await storePaymentData(firestorePaymentData);
+          console.log('Cashfree payment data stored in Firestore successfully from webhook');
+        } catch (firestoreError) {
+          console.error('Failed to store Cashfree payment data in Firestore from webhook:', firestoreError);
+        }
+      }
     }
     
-    res.json({
-      success: true,
-      data: captureResponse.data
-    });
-    
+    res.status(200).json({ success: true, message: 'Webhook processed' });
   } catch (error) {
-    console.error('PayPal Capture Error:', error.response?.data || error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Capture failed: ' + (error.response?.data?.message || error.message)
-    });
+    console.error('Cashfree Webhook Error:', error);
+    res.status(500).json({ success: false, message: 'Webhook failed' });
   }
 };

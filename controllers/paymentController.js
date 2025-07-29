@@ -425,14 +425,19 @@ exports.initiateCashfreePayment = async (req, res) => {
   try {
     const { amount, ecommPlan, hostingPlan, customerName, customerEmail, customerPhone } = req.body;
     
-    if (!amount || !customerEmail || !customerName) {
+    if (!amount || !customerEmail || !customerName || !customerPhone) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields'
+        message: 'Missing required fields: amount, customerName, customerEmail, customerPhone'
       });
     }
     
     console.log('Cashfree Payment Request:', req.body);
+    
+    // Validate phone number - ensure it has at least 10 digits or use a default
+    const validatedPhone = customerPhone && customerPhone.length >= 10 
+      ? customerPhone 
+      : "9999999999"; // Default fallback number
     
     // Generate unique transaction ID
     const merchantTransactionId = `CMS_${Date.now()}_${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
@@ -446,7 +451,7 @@ exports.initiateCashfreePayment = async (req, res) => {
       amount: parseFloat(amount),
       customerName,
       customerEmail,
-      customerPhone,
+      customerPhone: validatedPhone,
       ecommPlan,
       hostingPlan,
       status: 'PENDING',
@@ -467,7 +472,7 @@ exports.initiateCashfreePayment = async (req, res) => {
         customer_id: `CUST_${Date.now()}`,
         customer_name: customerName,
         customer_email: customerEmail,
-        customer_phone: customerPhone
+        customer_phone: validatedPhone
       },
       order_meta: {
         return_url: returnUrl + '?order_id={order_id}',

@@ -448,7 +448,8 @@ exports.initiateCashfreePayment = async (req, res) => {
     
     // Create return URL with order details
     const returnUrl = `${process.env.FRONTEND_URL}/payment-status?merchantTransactionId=${merchantTransactionId}&amount=${amount}&method=cashfree&customer=${encodeURIComponent(customerName)}`;
-    
+    const cancelUrl = `${process.env.FRONTEND_URL}/payment-cancel?merchantTransactionId=${merchantTransactionId}`;
+
     // Store payment info for verification
     const paymentInfo = {
       merchantTransactionId,
@@ -479,8 +480,9 @@ exports.initiateCashfreePayment = async (req, res) => {
         customer_phone: validatedPhone
       },
       order_meta: {
-        return_url: returnUrl + '?order_id={order_id}',
-        notify_url: process.env.BACKEND_URL + '/api/payment/cashfree-webhook'
+        return_url: returnUrl + '&order_id={order_id}',
+        notify_url: process.env.BACKEND_URL + '/api/payment/cashfree-webhook',
+        cancel_url: cancelUrl
       },
       order_note: `CraftMyStore - ${ecommPlan} + ${hostingPlan}`
     };

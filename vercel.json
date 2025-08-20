@@ -7,12 +7,12 @@
     }
   ],
   "routes": [
-    { "src": "/payment-status", "dest": "/index.html" },
-    { "src": "/payment-cancel", "dest": "/index.html" },
-    { "src": "/(.*)", "dest": "/index.html" }
+    {
+      "src": "/(.*)",
+      "dest": "/index.js"
+    }
   ],
   "env": {
     "NODE_ENV": "production"
   }
-
 }

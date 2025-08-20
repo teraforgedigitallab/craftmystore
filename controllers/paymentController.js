@@ -4,6 +4,10 @@ const { StandardCheckoutClient, Env, MetaInfo, StandardCheckoutPayRequest } = re
 const nodemailer = require('nodemailer');
 const admin = require('firebase-admin');
 const { Cashfree, CFEnvironment } = require('cashfree-pg');
+const { parse } = require('path');
+
+const DEFAULT_CURRENCY = "INR";
+const SUPPORTED_CURRENCIES = ["AFN", "ALL", "DZD", "AOA", "ARS", "AMD", "AWG", "AUD", "AZN", "BSD", "BHD", "BDT", "BBD", "BZD", "BMD", "BTN", "BOB", "BAM", "BWP", "BRL", "BND", "BGN", "BIF", "KHR", "CAD", "CVE", "KYD", "XAF", "XPF", "CLP", "COP", "KMF", "CDF", "CRC", "CZK", "DKK", "DJF", "DOP", "XCD", "EGP", "ERN", "SZL", "ETB", "EUR", "FKP", "FJD", "GMD", "GEL", "GHS", "GIP", "GTQ", "GNF", "GYD", "HTG", "HNL", "HKD", "HUF", "ISK", "INR", "IDR", "IQD", "JMD", "JPY", "JOD", "KZT", "KES", "KWD", "KGS", "LAK", "LBP", "LRD", "LYD", "MOP", "MKD", "MGA", "MWK", "MYR", "MVR", "MRU", "MUR", "MXN", "MDL", "MNT", "MAD", "MZN", "NAD", "NPR", "ILS", "TWD", "NZD", "NIO", "NGN", "NOK", "PGK", "PYG", "PEN", "PHP", "PLN", "GBP", "QAR", "CNY", "OMR", "RON", "RUB", "RWF", "SHP", "WST", "SAR", "RSD", "SCR", "SLL", "SGD", "SBD", "SOS", "ZAR", "KRW", "LKR", "SRD", "SEK", "CHF", "TJS", "TZS", "THB", "TOP", "TTD", "TND", "TRY", "TMT", "AED", "UGX", "UAH", "UYU", "USD", "UZS", "VUV", "VND", "XOF", "YER", "ZMW"];
 
 // Initialize Firebase Admin SDK (if not already initialized elsewhere)
 if (!admin.apps.length) {
@@ -423,8 +427,8 @@ exports.verifyPhonePePayment = async (req, res) => {
 // Initiate Cashfree Payment
 exports.initiateCashfreePayment = async (req, res) => {
   try {
-    const { amount, ecommPlan, hostingPlan, customerName, customerEmail, customerPhone } = req.body;
-    
+    const { amount, currency = DEFAULT_CURRENCY, ecommPlan, hostingPlan, customerName, customerEmail, customerPhone } = req.body;
+
     if (!amount || !customerEmail || !customerName || !customerPhone) {
       return res.status(400).json({
         success: false,
@@ -467,7 +471,7 @@ exports.initiateCashfreePayment = async (req, res) => {
     const orderRequest = {
       order_id: merchantTransactionId,
       order_amount: amount.toString(),
-      order_currency: "INR",
+      order_currency: SUPPORTED_CURRENCIES.includes(currency) ? currency : DEFAULT_CURRENCY,
       customer_details: {
         customer_id: `CUST_${Date.now()}`,
         customer_name: customerName,
